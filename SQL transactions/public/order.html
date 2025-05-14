@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Place Order</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+
+<body class="flex justify-center items-center h-screen bg-gray-100">
+    <div class="w-96 bg-white p-6 rounded-lg shadow-md">
+        <h2 class="text-2xl font-bold mb-4 text-center">Place an Order</h2>
+        <form action="/order" method="POST">
+            <label class="block mb-2">Item:
+                <input type="text" name="item" required class="w-full border px-3 py-2 rounded mb-4">
+            </label>
+            <label class="block mb-2">Phone:
+                <input type="text" name="phone" required class="w-full border px-3 py-2 rounded mb-4">
+            </label>
+            <label class="block mb-2">Amount:
+                <input type="number" name="amount" step="0.01" required class="w-full border px-3 py-2 rounded mb-4">
+            </label>
+            <button type="submit" class="w-full bg-blue-600 text-white py-2 rounded hover:bg-blue-700">Place
+                Order</button>
+        </form>
+    </div>
+</body>
+
+</html>
