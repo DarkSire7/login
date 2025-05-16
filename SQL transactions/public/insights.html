@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>AI Insights</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+
+<body class="bg-gray-900 text-white p-6">
+    <header class="mb-8">
+        <h1 class="text-3xl font-bold mb-2">Order AI Insights</h1>
+        <p class="text-gray-400">AI-powered analysis of your business data</p>
+    </header>
+
+    <nav class="mb-6">
+        <ul class="flex space-x-4">
+            <li><a href="/order" class="text-blue-400 hover:underline">New Order</a></li>
+            <li><a href="/orders" class="text-blue-400 hover:underline">View Orders</a></li>
+            <li><a href="/insights" class="text-blue-400 hover:underline font-bold">Insights</a></li>
+        </ul>
+    </nav>
+
+    <div class="flex flex-col space-y-4">
+        <button onclick="fetchInsights()"
+            class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded flex items-center justify-center w-40">
+            <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                xmlns="http://www.w3.org/2000/svg">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z">
+                </path>
+            </svg>
+            Generate Insights
+        </button>
+
+        <div id="loading" class="hidden text-gray-400">
+            Analyzing your order data...
+        </div>
+    </div>
+
+    <div id="insights-container" class="mt-8 hidden">
+        <div class="bg-gray-800 border border-gray-700 rounded-lg p-6">
+            <h2 class="text-xl font-semibold mb-4">Business Insights</h2>
+            <div id="insights" class="text-gray-300 whitespace-pre-line markdown"></div>
+        </div>
+    </div>
+
+    <script>
+        // Simple markdown parser for formatting insights
+        function parseMarkdown(markdown) {
+            if (!markdown) return '';
+
+            // Replace headers
+            let html = markdown
+                .replace(/^# (.*$)/gm, '<h1 class="text-2xl font-bold my-3">$1</h1>')
+                .replace(/^## (.*$)/gm, '<h2 class="text-xl font-semibold my-2">$1</h2>')
+                .replace(/^### (.*$)/gm, '<h3 class="text-lg font-medium my-2">$1</h3>')
+
+                // Replace lists
+                .replace(/^\- (.*$)/gm, '<li class="ml-4">• $1</li>')
+
+                // Replace paragraphs
+                .split('\n\n').join('</p><p class="my-2">');
+
+            return '<p class="my-2">' + html + '</p>';
+        }
+
+        function fetchInsights() {
+            // Show loading state
+            document.getElementById('loading').classList.remove('hidden');
+            document.getElementById('insights-container').classList.add('hidden');
+
+            fetch('/api/order-insights')
+                .then(res => {
+                    if (!res.ok) {
+                        throw new Error('Server error: ' + res.status);
+                    }
+                    return res.json();
+                })
+                .then(data => {
+                    // Hide loading state
+                    document.getElementById('loading').classList.add('hidden');
+
+                    // Show insights container
+                    document.getElementById('insights-container').classList.remove('hidden');
+
+                    // Format and display insights with markdown parsing
+                    document.getElementById('insights').innerHTML = parseMarkdown(data.insights);
+                })
+                .catch(err => {
+                    console.error(err);
+                    document.getElementById('loading').classList.add('hidden');
+                    document.getElementById('insights-container').classList.remove('hidden');
+                    document.getElementById('insights').innerHTML =
+                        '<div class="text-red-500">Failed to fetch insights. Please try again later.</div>';
+                });
+        }
+    </script>
+</body>
+
+</html>
