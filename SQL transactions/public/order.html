@@ -5,25 +5,157 @@
     <meta charset="UTF-8">
     <title>Place Order</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
 </head>
 
-<body class="flex justify-center items-center h-screen bg-gray-100">
+<body class="flex justify-center items-center min-h-screen bg-gray-100 py-10">
     <div class="w-96 bg-white p-6 rounded-lg shadow-md">
         <h2 class="text-2xl font-bold mb-4 text-center">Place an Order</h2>
-        <form action="/place-order" method="POST">
-            <label class="block mb-2">Item:
-                <input type="text" name="item" required class="w-full border px-3 py-2 rounded mb-4">
-            </label>
-            <label class="block mb-2">Phone:
-                <input type="text" name="phone" required class="w-full border px-3 py-2 rounded mb-4">
-            </label>
-            <label class="block mb-2">Amount:
-                <input type="number" name="amount" step="0.01" required class="w-full border px-3 py-2 rounded mb-4">
-            </label>
-            <button type="submit" class="w-full bg-blue-600 text-white py-2 rounded hover:bg-blue-700">Place
-                Order</button>
-        </form>
+        
+        <!-- Order Form -->
+        <div id="orderForm">
+            <form id="placeOrderForm">
+                <label class="block mb-2">Item:
+                    <input type="text" name="item" id="item" required class="w-full border px-3 py-2 rounded mb-4">
+                </label>
+                <label class="block mb-2">Phone:
+                    <input type="text" name="phone" id="phone" required class="w-full border px-3 py-2 rounded mb-4">
+                </label>
+                <label class="block mb-2">Amount:
+                    <input type="number" name="amount" id="amount" step="0.01" required class="w-full border px-3 py-2 rounded mb-4">
+                </label>
+                <button type="submit" class="w-full bg-blue-600 text-white py-2 rounded hover:bg-blue-700">Place Order & Pay</button>
+            </form>
+            
+            <!-- Loading Spinner -->
+            <div id="orderLoader" class="hidden mt-4 flex justify-center">
+                <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+            </div>
+        </div>
+        
+        <!-- Success Message -->
+        <div id="orderSuccess" class="hidden">
+            <div class="bg-green-100 border-l-4 border-green-500 text-green-700 p-4 mb-4" role="alert">
+                <h4 class="font-bold">Order Placed Successfully!</h4>
+                <p>Your order token: <strong id="orderToken"></strong></p>
+                <p>We'll send updates to your phone.</p>
+            </div>
+            <div class="space-y-2">
+                <!-- Place Another Order button stays inside the success message box -->
+                <a href="/order" class="block text-center border border-blue-600 text-blue-600 py-2 rounded hover:bg-blue-50">Place Another Order</a>
+                <!-- View All Orders now appears after payment inside the success box -->
+                <a href="/orders" class="block text-center bg-gray-600 text-white py-2 rounded hover:bg-gray-700">View All Orders</a>
+            </div>
+        </div>
     </div>
+
+    <script>
+        // Hide the DOCTYPE text that appears incorrectly
+        document.addEventListener('DOMContentLoaded', function() {
+            // Handle form submission
+            document.getElementById('placeOrderForm').addEventListener('submit', function(e) {
+                e.preventDefault();
+                
+                const orderLoader = document.getElementById('orderLoader');
+                orderLoader.classList.remove('hidden');
+                
+                const formData = {
+                    item: document.getElementById('item').value,
+                    phone: document.getElementById('phone').value,
+                    amount: document.getElementById('amount').value
+                };
+                
+                // Submit order data to server
+                fetch('/place-order', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(formData)
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        // Open Razorpay payment dialog
+                        const options = {
+                            key: "rzp_test_VCIn0ydmyceB7m", // Your Razorpay Key ID
+                            amount: data.amount,
+                            currency: "INR",
+                            name: "SwiftBites",
+                            description: `Order for ${formData.item}`,
+                            order_id: data.razorpayOrderId,
+                            handler: function (response) {
+                                // Payment successful, verify on server
+                                verifyPayment({
+                                    razorpay_payment_id: response.razorpay_payment_id,
+                                    razorpay_order_id: response.razorpay_order_id,
+                                    razorpay_signature: response.razorpay_signature,
+                                    order_id: data.orderId
+                                });
+                            },
+                            prefill: {
+                                contact: formData.phone
+                            },
+                            theme: {
+                                color: "#2563eb" // tailwind blue-600
+                            }
+                        };
+                        
+                        const rzp = new Razorpay(options);
+                        rzp.open();
+                        
+                        // Hide loader when Razorpay opens
+                        orderLoader.classList.add('hidden');
+                        
+                        rzp.on('payment.failed', function (response) {
+                            alert('Payment failed. Please try again.');
+                            orderLoader.classList.add('hidden');
+                        });
+                    } else {
+                        alert('Error placing order: ' + (data.error || 'Unknown error'));
+                        orderLoader.classList.add('hidden');
+                    }
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    alert('Failed to place order. Please try again.');
+                    orderLoader.classList.add('hidden');
+                });
+            });
+            
+            // Function to verify payment with server
+            function verifyPayment(paymentData) {
+                const orderLoader = document.getElementById('orderLoader');
+                orderLoader.classList.remove('hidden');
+                
+                fetch('/verify-payment', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(paymentData)
+                })
+                .then(response => response.json())
+                .then(data => {
+                    orderLoader.classList.add('hidden');
+                    
+                    if (data.success) {
+                        // Show success message
+                        document.getElementById('orderForm').classList.add('hidden');
+                        document.getElementById('orderSuccess').classList.remove('hidden');
+                        document.getElementById('orderToken').textContent = data.token;
+                    } else {
+                        alert('Payment verification failed: ' + (data.error || 'Unknown error'));
+                    }
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    alert('Payment verification failed. Please contact support.');
+                    orderLoader.classList.add('hidden');
+                });
+            }
+        });
+    </script>
 </body>
 
 </html>

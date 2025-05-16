@@ -5,6 +5,7 @@ const bodyParser = require('body-parser');
 const { Vonage } = require('@vonage/server-sdk');
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const crypto = require('crypto');
+const Razorpay = require('razorpay'); // Add Razorpay SDK
 
 const app = express();
 const PORT = 3000;
@@ -13,6 +14,12 @@ const PORT = 3000;
 const vonage = new Vonage({
   apiKey: '1fa5205f',
   apiSecret: 'yjRaTmkVfdFVDS2I'
+});
+
+// Initialize Razorpay with your API keys
+const razorpay = new Razorpay({
+  key_id: 'rzp_test_VCIn0ydmyceB7m',
+  key_secret: 'adWjNivAm8hikywgCepwNsrC'
 });
 
 // Initialize Google Gemini API with the correct key
@@ -29,7 +36,6 @@ const db = new sqlite3.Database('./orders.db', (err) => {
 });
 
 // Add token field to the orders table if it doesn't exist
-
 db.run(`
   CREATE TABLE IF NOT EXISTS orders (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -39,13 +45,15 @@ db.run(`
     date TEXT,
     time TEXT,
     status TEXT DEFAULT 'pending',
-    token TEXT
+    token TEXT,
+    payment_id TEXT,
+    payment_status TEXT DEFAULT 'pending'
   )
 `, (err) => {
   if (err) {
     console.error('Error creating table:', err);
   } else {
-    // Check if token column exists in the orders table, if not add it
+    // Check if required columns exist, if not add them
     db.all("PRAGMA table_info(orders)", (err, rows) => {
       if (err) {
         console.error("Error checking database schema:", err);
@@ -54,19 +62,26 @@ db.run(`
 
       console.log("Database schema rows:", rows);
 
-      // Check if the token column exists in the orders table
-      if (!rows.some(row => row.name === 'token')) {
-        // Add token column if it doesn't exist
-        db.run("ALTER TABLE orders ADD COLUMN token TEXT", (err) => {
-          if (err) {
-            console.error("Error adding token column:", err);
-          } else {
-            console.log("Added token column to orders table");
-          }
-        });
-      } else {
-        console.log("Token column already exists in orders table");
-      }
+      // Check if columns exist and add them if they don't
+      const requiredColumns = [
+        { name: 'token', type: 'TEXT' },
+        { name: 'payment_id', type: 'TEXT' },
+        { name: 'payment_status', type: 'TEXT DEFAULT "pending"' }
+      ];
+
+      requiredColumns.forEach(column => {
+        if (!rows.some(row => row.name === column.name)) {
+          db.run(`ALTER TABLE orders ADD COLUMN ${column.name} ${column.type}`, (err) => {
+            if (err) {
+              console.error(`Error adding ${column.name} column:`, err);
+            } else {
+              console.log(`Added ${column.name} column to orders table`);
+            }
+          });
+        } else {
+          console.log(`${column.name} column already exists in orders table`);
+        }
+      });
     });
   }
 });
@@ -86,7 +101,7 @@ app.get('/order', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'order.html'));
 });
 
-// Place an order
+// Place an order and initiate payment
 app.post('/place-order', (req, res) => {
   const { item, phone, amount } = req.body;
   const now = new Date();
@@ -94,30 +109,114 @@ app.post('/place-order', (req, res) => {
   const time = now.toLocaleTimeString();
   const token = generateToken(); // Generate unique token for this order
 
+  // First, create the order in our database
   db.run(
-    `INSERT INTO orders (item, phone, amount, date, time, status, token) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    [item, phone, amount, date, time, 'pending', token],
+    `INSERT INTO orders (item, phone, amount, date, time, status, token, payment_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [item, phone, amount, date, time, 'pending', token, 'pending'],
     function (err) {
       if (err) {
         console.error(err);
-        res.send('Error placing order.');
-      } else {
-        // Send confirmation SMS with token
-        const from = "SwiftBites";
-        const text = `Your order for "${item}" has been placed! Your order token is: ${token}. We'll notify you when it's ready.`;
-
-        vonage.sms.send({ to: phone, from, text })
-          .then(response => {
-            console.log("Confirmation SMS sent:", response);
-            res.send(`Order placed! Your order token is: <strong>${token}</strong>. <a href="/orders">View orders</a>`);
-          })
-          .catch(error => {
-            console.error("Vonage SMS error:", error);
-            res.send(`Order placed! Your order token is: <strong>${token}</strong>. <a href="/orders">View orders</a> (SMS notification failed)`);
-          });
+        return res.status(500).json({ error: 'Error placing order' });
       }
+      
+      const orderId = this.lastID;
+      
+      // Create a Razorpay order
+      const razorpayOptions = {
+        amount: Math.round(amount * 100), // Razorpay expects amount in smallest currency unit (paise)
+        currency: "INR",
+        receipt: `order_${orderId}`,
+        notes: {
+          item: item,
+          phone: phone,
+          token: token
+        }
+      };
+      
+      razorpay.orders.create(razorpayOptions, (err, razorpayOrder) => {
+        if (err) {
+          console.error("Razorpay order creation error:", err);
+          return res.status(500).json({ error: 'Failed to initiate payment' });
+        }
+        
+        // Update our order with the Razorpay order ID
+        db.run(`UPDATE orders SET payment_id = ? WHERE id = ?`, 
+          [razorpayOrder.id, orderId], 
+          (err) => {
+            if (err) {
+              console.error("Error updating order with payment ID:", err);
+            }
+          }
+        );
+        
+        // Return the order information and Razorpay order details to the client
+        res.json({
+          success: true,
+          orderId: orderId,
+          token: token,
+          razorpayOrderId: razorpayOrder.id,
+          amount: razorpayOrder.amount, // Return amount in paise
+          key: razorpay.key_id
+        });
+      });
     }
   );
+});
+
+// Payment verification and completion
+app.post('/verify-payment', (req, res) => {
+  const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
+  
+  // Verify the payment signature
+  const generatedSignature = crypto
+    .createHmac('sha256', razorpay.key_secret)
+    .update(`${razorpay_order_id}|${razorpay_payment_id}`)
+    .digest('hex');
+  
+  if (generatedSignature === razorpay_signature) {
+    // Payment is successful, update order status
+    db.run(
+      `UPDATE orders SET payment_status = 'completed' WHERE payment_id = ?`,
+      [razorpay_order_id],
+      function(err) {
+        if (err) {
+          console.error("Error updating payment status:", err);
+          return res.status(500).json({ error: 'Failed to update payment status' });
+        }
+        
+        // Get order details to send confirmation SMS
+        db.get(`SELECT phone, item, token FROM orders WHERE payment_id = ?`, [razorpay_order_id], async (err, row) => {
+          if (err || !row) {
+            console.error("Error fetching order details:", err);
+            return res.json({ success: true });
+          }
+          
+          const { phone, item, token } = row;
+          
+          // Send confirmation SMS
+          const from = "SwiftBites";
+          const text = `Your order for "${item}" has been placed and payment received! Your order token is: ${token}. We'll notify you when it's ready.`;
+
+          try {
+            await vonage.sms.send({ to: phone, from, text });
+            console.log("Confirmation SMS sent after payment");
+          } catch (error) {
+            console.error("Vonage SMS error:", error);
+          }
+          
+          // Return success to client
+          res.json({ 
+            success: true,
+            token: token,
+            message: "Payment verified and order confirmed!"
+          });
+        });
+      }
+    );
+  } else {
+    // Invalid signature, payment verification failed
+    res.status(400).json({ success: false, error: 'Payment verification failed' });
+  }
 });
 
 // ✅ Mark order as prepared and send SMS
@@ -239,6 +338,12 @@ function generateLocalInsights(orders) {
     pickedup: orders.filter(o => o.status === 'pickedup').length
   };
 
+  // Count orders by payment status
+  const ordersByPayment = {
+    pending: orders.filter(o => o.payment_status === 'pending').length,
+    completed: orders.filter(o => o.payment_status === 'completed').length
+  };
+
   // Build insights string
   let insights = `# Business Insights Report\n\n`;
 
@@ -257,6 +362,10 @@ function generateLocalInsights(orders) {
   insights += `- Pending: ${ordersByStatus.pending}\n`;
   insights += `- Prepared: ${ordersByStatus.prepared}\n`;
   insights += `- Picked Up: ${ordersByStatus.pickedup}\n\n`;
+  
+  insights += `## Payment Status Breakdown\n`;
+  insights += `- Payment Pending: ${ordersByPayment.pending}\n`;
+  insights += `- Payment Completed: ${ordersByPayment.completed}\n\n`;
 
   insights += `## Recommendations\n`;
 
@@ -274,6 +383,10 @@ function generateLocalInsights(orders) {
   } else {
     insights += `- Your average order value is good, consider loyalty rewards for repeat customers\n`;
   }
+  
+  if (ordersByPayment.pending > ordersByPayment.completed * 0.5) {
+    insights += `- Review your payment process, many customers are abandoning payment\n`;
+  }
 
   return insights;
 }
@@ -281,7 +394,8 @@ function generateLocalInsights(orders) {
 // Fallback function to generate basic stats if even local insights generation fails
 function generateBasicStats(orders) {
   const totalRevenue = orders.reduce((sum, order) => sum + parseFloat(order.amount), 0).toFixed(2);
-  return `Total Orders: ${orders.length}\nTotal Revenue: $${totalRevenue}`;
+  const completedPayments = orders.filter(o => o.payment_status === 'completed').length;
+  return `Total Orders: ${orders.length}\nTotal Revenue: $${totalRevenue}\nCompleted Payments: ${completedPayments}`;
 }
 
 // Home route
