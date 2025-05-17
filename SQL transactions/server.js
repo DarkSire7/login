@@ -104,120 +104,122 @@ app.get('/order', (req, res) => {
 // Place an order and initiate payment
 app.post('/place-order', (req, res) => {
   const { item, phone, amount } = req.body;
-  const now = new Date();
-  const date = now.toLocaleDateString();
-  const time = now.toLocaleTimeString();
-  const token = generateToken(); // Generate unique token for this order
+  const token = generateToken();
 
-  // First, create the order in our database
-  db.run(
-    `INSERT INTO orders (item, phone, amount, date, time, status, token, payment_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    [item, phone, amount, date, time, 'pending', token, 'pending'],
-    function (err) {
-      if (err) {
-        console.error(err);
-        return res.status(500).json({ error: 'Error placing order' });
-      }
-      
-      const orderId = this.lastID;
-      
-      // Create a Razorpay order
-      const razorpayOptions = {
-        amount: Math.round(amount * 100), // Razorpay expects amount in smallest currency unit (paise)
-        currency: "INR",
-        receipt: `order_${orderId}`,
-        notes: {
-          item: item,
-          phone: phone,
-          token: token
-        }
-      };
-      
-      razorpay.orders.create(razorpayOptions, (err, razorpayOrder) => {
-        if (err) {
-          console.error("Razorpay order creation error:", err);
-          return res.status(500).json({ error: 'Failed to initiate payment' });
-        }
-        
-        // Update our order with the Razorpay order ID
-        db.run(`UPDATE orders SET payment_id = ? WHERE id = ?`, 
-          [razorpayOrder.id, orderId], 
-          (err) => {
-            if (err) {
-              console.error("Error updating order with payment ID:", err);
-            }
-          }
-        );
-        
-        // Return the order information and Razorpay order details to the client
-        res.json({
-          success: true,
-          orderId: orderId,
-          token: token,
-          razorpayOrderId: razorpayOrder.id,
-          amount: razorpayOrder.amount, // Return amount in paise
-          key: razorpay.key_id
-        });
-      });
+  const razorpayOptions = {
+    amount: Math.round(amount * 100),
+    currency: "INR",
+    receipt: `temp_${token}`,
+    notes: { item, phone, token }
+  };
+
+  razorpay.orders.create(razorpayOptions, (err, razorpayOrder) => {
+    if (err) {
+      console.error("Razorpay order creation error:", err);
+      return res.status(500).json({ error: 'Failed to initiate payment' });
     }
-  );
+
+    res.json({
+    success: true,
+    razorpayOrderId: razorpayOrder.id,
+    amount: razorpayOrder.amount,
+    token: token,
+    key: razorpay.key_id,
+    item: item,
+    phone: phone
+  });
+
+  });
 });
+
 
 // Payment verification and completion
 app.post('/verify-payment', (req, res) => {
-  const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
-  
-  // Verify the payment signature
+  const { razorpay_order_id, razorpay_payment_id, razorpay_signature, item, phone, amount, token } = req.body;
+
+  // Generate signature string exactly as Razorpay expects
   const generatedSignature = crypto
     .createHmac('sha256', razorpay.key_secret)
     .update(`${razorpay_order_id}|${razorpay_payment_id}`)
     .digest('hex');
-  
-  if (generatedSignature === razorpay_signature) {
-    // Payment is successful, update order status
-    db.run(
-      `UPDATE orders SET payment_status = 'completed' WHERE payment_id = ?`,
-      [razorpay_order_id],
-      function(err) {
-        if (err) {
-          console.error("Error updating payment status:", err);
-          return res.status(500).json({ error: 'Failed to update payment status' });
-        }
-        
-        // Get order details to send confirmation SMS
-        db.get(`SELECT phone, item, token FROM orders WHERE payment_id = ?`, [razorpay_order_id], async (err, row) => {
-          if (err || !row) {
-            console.error("Error fetching order details:", err);
-            return res.json({ success: true });
-          }
-          
-          const { phone, item, token } = row;
-          
-          // Send confirmation SMS
-          const from = "SwiftBites";
-          const text = `Your order for "${item}" has been placed and payment received! Your order token is: ${token}. We'll notify you when it's ready.`;
 
-          try {
-            await vonage.sms.send({ to: phone, from, text });
-            console.log("Confirmation SMS sent after payment");
-          } catch (error) {
-            console.error("Vonage SMS error:", error);
-          }
-          
-          // Return success to client
-          res.json({ 
-            success: true,
-            token: token,
-            message: "Payment verified and order confirmed!"
-          });
-        });
+  if (generatedSignature === razorpay_signature) {
+    const now = new Date();
+    const date = now.toLocaleDateString();
+    const time = now.toLocaleTimeString();
+
+    // Check if an order with this token exists
+    db.get(`SELECT * FROM orders WHERE token = ?`, [token], (err, row) => {
+      if (err) {
+        console.error("Error fetching order:", err);
+        return res.status(500).json({ error: 'Failed to verify order' });
       }
-    );
+
+      if (row) {
+        // If order already exists, update it
+        db.run(
+          `UPDATE orders SET payment_status = ?, status = ?, payment_id = ?, date = ?, time = ? WHERE token = ?`,
+          ['completed', 'completed', razorpay_payment_id, date, time, token],
+          function (err) {
+            if (err) {
+              console.error("Error updating order after payment:", err);
+              return res.status(500).json({ error: 'Failed to update order' });
+            }
+
+            // Send confirmation SMS
+            const from = "SwiftBites";
+            const text = `Your order for "${item}" has been placed and payment received! Your order token is: ${token}. We'll notify you when it's ready.`;
+
+            vonage.sms.send({ to: phone, from, text })
+              .then(() => console.log("Confirmation SMS sent"))
+              .catch(error => console.error("Vonage SMS error:", error));
+
+            res.json({
+              success: true,
+              token: token,
+              message: "Payment verified and order confirmed!",
+              orderId: row.id
+            });
+          }
+        );
+      } else {
+        // No existing order, insert new
+        db.run(
+          `INSERT INTO orders (item, phone, amount, date, time, status, token, payment_status, payment_id)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [item, phone, amount, date, time, 'pending', token, 'completed', razorpay_payment_id],
+          function (err) {
+            if (err) {
+              console.error("Error inserting order after payment:", err);
+              return res.status(500).json({ error: 'Failed to save order' });
+            }
+
+            // Send confirmation SMS
+            const from = "SwiftBites";
+            const text = `Your order for "${item}" has been placed and payment received! Your order token is: ${token}. We'll notify you when it's ready.`;
+
+            vonage.sms.send({ to: phone, from, text })
+              .then(() => console.log("Confirmation SMS sent"))
+              .catch(error => console.error("Vonage SMS error:", error));
+
+            res.json({
+              success: true,
+              token: token,
+              message: "Payment verified and order confirmed!",
+              orderId: this.lastID
+            });
+          }
+        );
+      }
+    });
   } else {
-    // Invalid signature, payment verification failed
+    // Signature mismatch
     res.status(400).json({ success: false, error: 'Payment verification failed' });
   }
 });
+
+
+
 
 // ✅ Mark order as prepared and send SMS
 app.post('/mark-prepared/:id', async (req, res) => {

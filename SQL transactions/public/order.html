@@ -50,112 +50,112 @@
     </div>
 
     <script>
-        // Hide the DOCTYPE text that appears incorrectly
-        document.addEventListener('DOMContentLoaded', function() {
-            // Handle form submission
-            document.getElementById('placeOrderForm').addEventListener('submit', function(e) {
-                e.preventDefault();
-                
-                const orderLoader = document.getElementById('orderLoader');
-                orderLoader.classList.remove('hidden');
-                
-                const formData = {
-                    item: document.getElementById('item').value,
-                    phone: document.getElementById('phone').value,
-                    amount: document.getElementById('amount').value
-                };
-                
-                // Submit order data to server
-                fetch('/place-order', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify(formData)
-                })
-                .then(response => response.json())
-                .then(data => {
-                    if (data.success) {
-                        // Open Razorpay payment dialog
-                        const options = {
-                            key: "rzp_test_VCIn0ydmyceB7m", // Your Razorpay Key ID
-                            amount: data.amount,
-                            currency: "INR",
-                            name: "SwiftBites",
-                            description: `Order for ${formData.item}`,
-                            order_id: data.razorpayOrderId,
-                            handler: function (response) {
-                                // Payment successful, verify on server
-                                verifyPayment({
-                                    razorpay_payment_id: response.razorpay_payment_id,
-                                    razorpay_order_id: response.razorpay_order_id,
-                                    razorpay_signature: response.razorpay_signature,
-                                    order_id: data.orderId
-                                });
-                            },
-                            prefill: {
-                                contact: formData.phone
-                            },
-                            theme: {
-                                color: "#2563eb" // tailwind blue-600
-                            }
-                        };
-                        
-                        const rzp = new Razorpay(options);
-                        rzp.open();
-                        
-                        // Hide loader when Razorpay opens
-                        orderLoader.classList.add('hidden');
-                        
-                        rzp.on('payment.failed', function (response) {
-                            alert('Payment failed. Please try again.');
-                            orderLoader.classList.add('hidden');
-                        });
-                    } else {
-                        alert('Error placing order: ' + (data.error || 'Unknown error'));
-                        orderLoader.classList.add('hidden');
-                    }
-                })
-                .catch(error => {
-                    console.error('Error:', error);
-                    alert('Failed to place order. Please try again.');
-                    orderLoader.classList.add('hidden');
-                });
-            });
-            
-            // Function to verify payment with server
-            function verifyPayment(paymentData) {
-                const orderLoader = document.getElementById('orderLoader');
-                orderLoader.classList.remove('hidden');
-                
-                fetch('/verify-payment', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify(paymentData)
-                })
-                .then(response => response.json())
-                .then(data => {
-                    orderLoader.classList.add('hidden');
-                    
-                    if (data.success) {
-                        // Show success message
-                        document.getElementById('orderForm').classList.add('hidden');
-                        document.getElementById('orderSuccess').classList.remove('hidden');
-                        document.getElementById('orderToken').textContent = data.token;
-                    } else {
-                        alert('Payment verification failed: ' + (data.error || 'Unknown error'));
-                    }
-                })
-                .catch(error => {
-                    console.error('Error:', error);
-                    alert('Payment verification failed. Please contact support.');
-                    orderLoader.classList.add('hidden');
-                });
-            }
-        });
-    </script>
+  document.addEventListener('DOMContentLoaded', function() {
+    const placeOrderForm = document.getElementById('placeOrderForm');
+    const orderLoader = document.getElementById('orderLoader');
+    let currentOrderData = {}; // to store order info like item, phone, amount, token
+
+    placeOrderForm.addEventListener('submit', function(e) {
+      e.preventDefault();
+      orderLoader.classList.remove('hidden');
+
+      // Gather order details from form
+      const formData = {
+        item: document.getElementById('item').value,
+        phone: document.getElementById('phone').value,
+        amount: document.getElementById('amount').value
+      };
+
+      fetch('/place-order', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(formData)
+      })
+      .then(response => response.json())
+      .then(data => {
+        if (data.success) {
+          // Save order data + token for later verification
+          currentOrderData = {
+            item: formData.item,
+            phone: formData.phone,
+            amount: formData.amount,
+            token: data.token  // this must come from backend's /place-order response
+          };
+
+          // Razorpay payment options
+          const options = {
+            key: "rzp_test_VCIn0ydmyceB7m",
+            amount: data.amount,
+            currency: "INR",
+            name: "SwiftBites",
+            description: `Order for ${formData.item}`,
+            order_id: data.razorpayOrderId,
+            handler: function (response) {
+              // On successful payment, send all required data to verify-payment
+              verifyPayment({
+                razorpay_payment_id: response.razorpay_payment_id,
+                razorpay_order_id: response.razorpay_order_id,
+                razorpay_signature: response.razorpay_signature,
+                item: currentOrderData.item,
+                phone: currentOrderData.phone,
+                amount: currentOrderData.amount,
+                token: currentOrderData.token
+              });
+            },
+            prefill: { contact: formData.phone },
+            theme: { color: "#2563eb" }
+          };
+
+          const rzp = new Razorpay(options);
+          rzp.open();
+          orderLoader.classList.add('hidden');
+
+          rzp.on('payment.failed', function(response) {
+            alert('Payment failed. Please try again.');
+            orderLoader.classList.add('hidden');
+          });
+
+        } else {
+          alert('Error placing order: ' + (data.error || 'Unknown error'));
+          orderLoader.classList.add('hidden');
+        }
+      })
+      .catch(error => {
+        console.error('Error:', error);
+        alert('Failed to place order. Please try again.');
+        orderLoader.classList.add('hidden');
+      });
+    });
+
+    // Function to verify payment with server
+    function verifyPayment(paymentData) {
+      orderLoader.classList.remove('hidden');
+
+      fetch('/verify-payment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(paymentData)
+      })
+      .then(response => response.json())
+      .then(data => {
+        orderLoader.classList.add('hidden');
+        if (data.success) {
+          document.getElementById('orderForm').classList.add('hidden');
+          document.getElementById('orderSuccess').classList.remove('hidden');
+          document.getElementById('orderToken').textContent = data.token;
+        } else {
+          alert('Payment verification failed: ' + (data.error || 'Unknown error'));
+        }
+      })
+      .catch(error => {
+        console.error('Error:', error);
+        alert('Payment verification failed. Please contact support.');
+        orderLoader.classList.add('hidden');
+      });
+    }
+  });
+</script>
+
 </body>
 
 </html>
